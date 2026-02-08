@@ -1,100 +1,120 @@
-import pygame
+import sounddevice as sd
+import numpy as np
+from pygame import *
 from random import randint
-import sys  # Потрібен для коректного виходу
 
-pygame.init()
+# ====== НАЛАШТУВАННЯ АУДІО ======
+sr = 16000
+block = 256
+mic_level = 0.0
+
+def audio_cb(indata, frames, time, status):
+    global mic_level
+    if status:
+        return
+    # Рахуємо RMS (середньоквадратичну гучність)
+    rms = float(np.sqrt(np.mean(indata**2)))
+    mic_level = 0.85 * mic_level + 0.15 * rms
+
+# ====== НАЛАШТУВАННЯ ГРИ ======
+init()
 window_size = 1200, 800
-window = pygame.display.set_mode(window_size)
-pygame.display.set_caption("Flappy Square")
-clock = pygame.time.Clock()
+window = display.set_mode(window_size)
+display.set_caption("Voice Bird")
+clock = time.Clock()
 
-player_rect = pygame.Rect(150, window_size[1]//2-100, 100, 100)
+# Фізика та параметри
+THRESH = 0.005      # Поріг чутливості мікрофона (підлаштуй під себе)
+IMPULSE = -9.0     # Сила стрибка вгору
+GRAVITY = 0.6       # Сила падіння вниз
 
-# Додали параметр start_pos, щоб нові труби з'являлися після останніх
-def generate_pipes(count, start_pos=None, pipe_width=140, gap=280, distance=650):
+player_rect = Rect(150, window_size[1]//2-100, 70, 70)
+y_vel = 0.0
+score = 0
+lose = False
+main_font = font.Font(None, 100)
+
+def generate_pipes(count, pipe_width=140, gap=260, min_height=50, max_height=450, distance=600):
     pipes = []
-    # Якщо позиція не вказана, починаємо за краєм екрана
-    start_x = start_pos if start_pos is not None else window_size[0]
-    
+    start_x = window_size[0]
     for i in range(count):
-        height = randint(50, 440)
-        top_pipe = pygame.Rect(start_x, 0, pipe_width, height)
-        bottom_pipe = pygame.Rect(start_x, height + gap, pipe_width, window_size[1] - (height + gap))
+        height = randint(min_height, max_height)
+        top_pipe = Rect(start_x, 0, pipe_width, height)
+        bottom_pipe = Rect(start_x, height + gap, pipe_width, window_size[1] - (height + gap))
         pipes.extend([top_pipe, bottom_pipe])
         start_x += distance
     return pipes
 
-# Початкові налаштування
-pipes = generate_pipes(20) # Для старту достатньо 20
-main_font = pygame.font.Font(None, 100)
-score = 0
-lose = False
-y_vel = 2
+pipes = generate_pipes(150)
 
-# Головний цикл
-while True:
-    # 1. ОБРОБКА ПОДІЙ
-    for e in pygame.event.get():
-        if e.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
+# ====== ГОЛОВНИЙ ЦИКЛ ======
+with sd.InputStream(samplerate=sr, channels=1, blocksize=block, callback=audio_cb):
+    while True:
+        for e in event.get():
+            if e.type == QUIT:
+                quit()
+                exit()
 
-    # 2. ЛОГІКА ГРИ
-    if not lose:
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_w]: player_rect.y -= 10
-        if keys[pygame.K_s]: player_rect.y += 10
-        
-        # Обробка руху труб та зіткнень
+        window.fill('sky blue')
+
+        # Обробка натискань клавіш
+        keys = key.get_pressed()
+
+        if not lose:
+            # Стрибок (Голос або Клавіша W)
+            if mic_level > THRESH or keys[K_w]:
+                y_vel = IMPULSE
+            
+            # Застосування гравітації
+            y_vel += GRAVITY
+            player_rect.y += int(y_vel)
+
+            # Перевірка меж екрана
+            if player_rect.top <= 0:
+                player_rect.top = 0
+                y_vel = 0
+            if player_rect.bottom >= window_size[1]:
+                lose = True
+
+        # Малювання та рух труб
         for pipe in pipes[:]:
-            pipe.x -= 8
+            if not lose:
+                pipe.x -= 8  # швидкість руху труб
+            
+            draw.rect(window, 'green', pipe)
+
+            # Видалення труб та нарахування очок
             if pipe.x <= -pipe.width:
                 pipes.remove(pipe)
-                score += 0.5 # Оскільки труб дві (верхня і нижня), за пару отримаємо +1
-            
+                score += 0.5 # 0.5 бо дві труби (верхня і нижня) складають один прохід
+
+            # Перевірка зіткнень
             if player_rect.colliderect(pipe):
                 lose = True
 
-        # Нескінченна генерація: якщо труб мало, додаємо нові в кінець останньої
+        # Малювання гравця
+        draw.rect(window, 'red', player_rect)
+
+        # Додавання нових труб, якщо вони закінчуються
         if len(pipes) < 10:
-            last_pipe_x = pipes[-1].x
-            pipes += generate_pipes(20, start_pos=last_pipe_x + 650)
+            pipes += generate_pipes(50)
 
-        # Перевірка виходу за межі екрана
-        if player_rect.top <= 0 or player_rect.bottom >= window_size[1]:
-            lose = True
-    else:
-        # Логіка програшу (падіння)
-        if player_rect.y < window_size[1]:
-            player_rect.y += y_vel
-            y_vel *= 1.1 # Прискорення падіння
-        
-        # Рестарт
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_r]:
-            lose = False
-            score = 0
-            y_vel = 2
-            player_rect.y = window_size[1]//2-100
-            pipes = generate_pipes(20)
+        # Відображення рахунку
+        score_text = main_font.render(f'Score: {int(score)}', True, 'black')
+        window.blit(score_text, (window_size[0]//2 - score_text.get_width()//2, 50))
 
-    # 3. МАЛЮВАННЯ
-    window.fill('sky blue')
-    
-    # Малюємо труби
-    for pipe in pipes:
-        pygame.draw.rect(window, 'green', pipe)
-    
-    # Малюємо гравця
-    pygame.draw.rect(window, 'red', player_rect)
-    
-    # Малюємо рахунок
-    score_text = main_font.render(f'Score: {int(score)}', True, 'black')
-    window.blit(score_text, (window_size[0]//2 - score_text.get_width()//2, 40))
+        # Екран програшу
+        if lose:
+            lose_text = main_font.render('GAME OVER! Press R', True, 'darkred')
+            window.blit(lose_text, (window_size[0]//2 - lose_text.get_width()//2, window_size[1]//2))
+            
+            if keys[K_r]:
+                # Скидання гри
+                lose = False
+                score = 0
+                y_vel = 0
+                player_rect.y = window_size[1]//2-100
+                pipes = generate_pipes(150)
 
-    if lose:
-        lose_text = main_font.render('PRESS R TO RESTART', True, 'red')
-        window.blit(lose_text, (window_size[0]//2 - lose_text.get_width()//2, window_size[1]//2))
-
-    pygame.display.update()
-    clock.tick(60)
+        display.update()
+        clock.tick(60)
